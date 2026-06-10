@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>미궁 컨텐츠 맵 시뮬레이터 (v3.2)</title>
+    <style>
+        body { background-color: #1a1a1a; color: #fff; font-family: 'Malgun Gothic', sans-serif; padding: 20px; margin: 0; }
+        h1 { color: #ffd700; text-align: center; font-size: 24px; margin-bottom: 5px; }
+        .controls { text-align: center; margin-bottom: 25px; }
+        button { background-color: #ffd700; color: #1a1a1a; border: none; padding: 12px 24px; font-weight: bold; cursor: pointer; font-size: 15px; border-radius: 6px; margin: 0 10px; transition: 0.2s; }
+        button:hover { background-color: #fff; transform: translateY(-2px); }
+        
+        .map-outer { position: relative; max-width: 550px; margin: 0 auto; background: #111; padding: 30px 20px; border-radius: 12px; box-shadow: 0 0 20px rgba(0,0,0,0.7); }
+        .map-container { display: flex; flex-direction: column; align-items: center; position: relative; z-index: 2; }
+        .line-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; pointer-events: none; }
+        
+        .row { display: flex; justify-content: center; width: 100%; margin: 25px 0; position: relative; }
+        .node { width: 52px; height: 52px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; margin: 0 20px; position: relative; box-shadow: 0 0 10px rgba(0,0,0,0.9); }
+        .node.empty { background: transparent; box-shadow: none; visibility: hidden; }
+        .node.normal { background: #4a4a4a; border: 2px solid #8c8c8c; color: #fff; }
+        .node.elite { background: #ba2323; border: 2px solid #ff4d4d; color: #fff; }
+        .node.event { background: #604db8; border: 2px solid #9485eb; color: #fff; }
+        .node.rest { background: #228522; border: 2px solid #4ade4a; color: #fff; }
+        .node.boss { background: #b89214; border: 2px solid #ffd700; color: #1a1a1a; width: 85px; height: 45px; border-radius: 6px; font-size: 14px; }
+        .node.start { background: #148f8f; border: 2px solid #26ffff; color: #fff; width: 85px; height: 35px; border-radius: 6px; font-size: 14px; }
+        
+        .stats { max-width: 510px; margin: 20px auto; background: #222; padding: 15px; border-radius: 8px; border: 1px solid #444; }
+        .stats h3 { margin-top: 0; color: #ffd700; font-size: 16px; border-bottom: 1px solid #444; padding-bottom: 5px; }
+        .stats p { margin: 6px 0; font-size: 14px; }
+        .badge { display: inline-block; padding: 3px 7px; border-radius: 4px; font-size: 11px; font-weight: bold; margin-right: 6px; }
+    </style>
+</head>
+<body>
+
+    <h1>미궁 컨텐츠 맵 시뮬레이터</h1>
+    <div class="controls">
+        <button onclick="buildMap('high')">상위 구역 생성 (4x10)</button>
+        <button onclick="buildMap('low')">하위 구역 생성 (3x5)</button>
+    </div>
+
+    <div class="stats" id="statsBox" style="display:none;">
+        <h3>Anatomy of Level Design (미궁 컨텐츠 검증 리포트)</h3>
+        <p>🔄 조건 충족을 위한 리롤(Re-roll) 횟수: <span id="rerollCount" style="color:#ff4500; font-weight:bold;">0</span>회</p>
+        <p><span class="badge" style="background:#4a4a4a;">일반</span> 일반 전투 노드 수: <span id="cntNormal" style="font-weight:bold; color:#00ffff;">0</span>개 <span id="normalLimitText" style="color:#888; font-size:12px;"></span></p>
+        <p><span class="badge" style="background:#ba2323;">격전</span> 격전 노드 수: <span id="cntElite" style="font-weight:bold;">0</span>개</p>
+        <p><span class="badge" style="background:#604db8;">역설</span> 역설 노드 수: <span id="cntEvent" style="font-weight:bold;">0</span>개</p>
+        <p><span class="badge" style="background:#228522;">회복</span> 회복 노드 수: <span id="cntRest" style="font-weight:bold;">0</span>개</p>
+    </div>
+
+    <div class="map-outer">
+        <canvas class="line-canvas" id="mapCanvas"></canvas>
+        <div class="map-container" id="mapGrid"></div>
+    </div>
+
+<script>
+function buildMap(mode) {
+    const COLS = mode === 'high' ? 4 : 3;
+    const ROWS = mode === 'high' ? 10 : 5;
+    
+    // 🔧 하위 구역(low)의 minNormal을 0으로 변경하여 최대 7개 이하 조건을 충족하도록 수정
+    const config = mode === 'high' ? 
+        { elite: 6, event: 5, rest: 3, minNormal: 12, maxNormal: 18, text: "(최대 18개 제한)" } : 
+        { elite: 2, event: 2, rest: 1, minNormal: 0, maxNormal: 7, text: "(최대 7개 제한)" };
+
+    let grid = [];
+    let reroll = 0;
+    let success = false;
+
+    while (!success) {
+        reroll++;
+        if (reroll > 5000) {
+            alert("조건에 맞는 맵을 생성하지 못했습니다. 버튼을 다시 눌러주세요.");
+            return;
+        }
+
+        grid = Array.from({ length: ROWS }, () => Array(COLS).fill('empty'));
+
+        // 1층 스타트 설정
+        let startNodes = mode === 'high' ? [0, 1, 2, 3] : [0, 1, 2];
+        startNodes = startNodes.sort(() => Math.random() - 0.5).slice(0, mode === 'high' ? 3 : 2);
+        startNodes.forEach(c => grid[0][c] = 'normal');
+
+        // 2층부터 아래로 가지 뻗기
+        for (let r = 0; r < ROWS - 1; r++) {
+            let nextLayerHasNode = false;
+            for (let c = 0; c < COLS; c++) {
+                if (grid[r][c] === 'empty') continue;
+
+                let targets = [-1, 0, 1].map(dc => c + dc).filter(tc => tc >= 0 && tc < COLS);
+                targets = targets.sort(() => Math.random() - 0.5);
+                
+                let branchCount = 0;
+                for (let tc of targets) {
+                    if (branchCount === 0 || Math.random() < 0.5) {
+                        grid[r + 1][tc] = 'normal';
+                        branchCount++;
+                        nextLayerHasNode = true;
+                    }
+                }
+            }
+            if (!nextLayerHasNode) { r = ROWS; continue; }
+        }
+
+        // 보스 직전층 검증
+        let lastLayerCount = grid[ROWS - 1].filter(x => x !== 'empty').length;
+        if (lastLayerCount < 2) continue;
+
+        // 특수 노드 배치
+        let itemPool = [];
+        for (let i = 0; i < config.elite; i++) itemPool.push('elite');
+        for (let i = 0; i < config.event; i++) itemPool.push('event');
+        for (let i = 0; i < config.rest; i++) itemPool.push('rest');
+        itemPool.sort(() => Math.random() - 0.5);
+
+        let allPlaced = true;
+        for (let type of itemPool) {
+            let placed = false;
+            let attempts = 0;
+
+            while (!placed && attempts < 500) {
+                attempts++;
+                let r = Math.floor(Math.random() * ROWS);
+                let c = Math.floor(Math.random() * COLS);
+
+                if (grid[r][c] !== 'normal') continue;
+
+                // 층수 배치 제약
+                if (type === 'elite' && r <= 2) continue;
+                if (type === 'event' && r <= 1) continue;
+                if (type === 'rest' && r <= 2) continue;
+
+                // 행/열 개수 제한
+                let rowCount = grid[r].filter(x => x === type).length;
+                let colCount = 0;
+                for (let i = 0; i < ROWS; i++) { if (grid[i][c] === type) colCount++; }
+
+                if (mode === 'high') {
+                    if (rowCount >= 2 || colCount >= 2) continue;
+                } else {
+                    if (rowCount >= 1) continue;
+                }
+
+                // 상하 연속 배치 제한
+                if (r > 0 && grid[r - 1][c] === type) continue;
+                if (r < ROWS - 1 && grid[r + 1][c] === type) continue;
+
+                grid[r][c] = type;
+                placed = true;
+            }
+            if (!placed) { allPlaced = false; break; }
+        }
+
+        if (!allPlaced) continue;
+
+        // 일반 노드 총 개수 카운트
+        let normalCount = 0;
+        for (let r = 0; r < ROWS; r++) {
+            for (let c = 0; c < COLS; c++) {
+                if (grid[r][c] === 'normal') normalCount++;
+            }
+        }
+
+        // 하한치(min)와 상한치(max) 만족 검사 루프
+        if (normalCount >= config.minNormal && normalCount <= config.maxNormal) {
+            success = true;
+        }
+    }
+
+    renderMap(grid, mode, reroll, ROWS, COLS, config);
+}
+
+function renderMap(grid, mode, reroll, ROWS, COLS, config) {
+    const container = document.getElementById('mapGrid');
+    container.innerHTML = '';
+
+    const startRow = document.createElement('div');
+    startRow.className = 'row';
+    startRow.innerHTML = '<div class="node start" id="startNode">START</div>';
+    container.appendChild(startRow);
+
+    let counts = { normal: 0, elite: 0, event: 0, rest: 0 };
+
+    grid.forEach((row, rIdx) => {
+        const rowDiv = document.createElement('div');
+        rowDiv.className = 'row';
+
+        row.forEach((cell, cIdx) => {
+            const nodeDiv = document.createElement('div');
+            nodeDiv.id = `node-${rIdx}-${cIdx}`;
+            
+            if (cell === 'empty') {
+                nodeDiv.className = 'node empty';
+            } else {
+                nodeDiv.className = `node ${cell}`;
+                if (cell === 'normal') { nodeDiv.innerText = `일반(${rIdx+1}F)`; counts.normal++; }
+                if (cell === 'elite') { nodeDiv.innerText = `격전(${rIdx+1}F)`; counts.elite++; }
+                if (cell === 'event') { nodeDiv.innerText = `역설(${rIdx+1}F)`; counts.event++; }
+                if (cell === 'rest') { nodeDiv.innerText = `회복(${rIdx+1}F)`; counts.rest++; }
+            }
+            rowDiv.appendChild(nodeDiv);
+        });
+        container.appendChild(rowDiv);
+    });
+
+    const bossRow = document.createElement('div');
+    bossRow.className = 'row';
+    bossRow.innerHTML = '<div class="node boss" id="bossNode">BOSS</div>';
+    container.appendChild(bossRow);
+
+    document.getElementById('statsBox').style.display = 'block';
+    document.getElementById('rerollCount').innerText = reroll - 1;
+    document.getElementById('cntNormal').innerText = counts.normal;
+    document.getElementById('cntElite').innerText = counts.elite;
+    document.getElementById('cntEvent').innerText = counts.event;
+    document.getElementById('cntRest').innerText = counts.rest;
+    document.getElementById('normalLimitText').innerText = config.text;
+
+    setTimeout(() => { drawConnections(grid, ROWS, COLS); }, 60);
+}
+
+function drawConnections(grid, ROWS, COLS) {
+    const canvas = document.getElementById('mapCanvas');
+    const ctx = canvas.getContext('2d');
+    const outer = document.querySelector('.map-outer');
+    
+    canvas.width = outer.clientWidth;
+    canvas.height = outer.clientHeight;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    ctx.strokeStyle = 'rgba(255, 215, 0, 0.5)';
+    ctx.lineWidth = 3;
+    ctx.setLineDash([5, 4]);
+
+    const outerRect = outer.getBoundingClientRect();
+    function getCenter(el) {
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { x: r.left - outerRect.left + r.width / 2, y: r.top - outerRect.top + r.height / 2 };
+    }
+
+    const startPt = getCenter(document.getElementById('startNode'));
+    for (let c = 0; c < COLS; c++) {
+        if (grid[0][c] !== 'empty') {
+            const targetPt = getCenter(document.getElementById(`node-0-${c}`));
+            if (startPt && targetPt) {
+                ctx.beginPath(); ctx.moveTo(startPt.x, startPt.y); ctx.lineTo(targetPt.x, targetPt.y); ctx.stroke();
+            }
+        }
+    }
+
+    for (let r = 0; r < ROWS - 1; r++) {
+        for (let c = 0; c < COLS; c++) {
+            if (grid[r][c] === 'empty') continue;
+            const fromPt = getCenter(document.getElementById(`node-${r}-${c}`));
+            if (!fromPt) continue;
+
+            for (let dc = -1; dc <= 1; dc++) {
+                let nextCol = c + dc;
+                if (nextCol >= 0 && nextCol < COLS) {
+                    if (grid[r + 1][nextCol] !== 'empty') {
+                        const toPt = getCenter(document.getElementById(`node-${r+1}-${nextCol}`));
+                        if (toPt) {
+                            ctx.beginPath(); ctx.moveTo(fromPt.x, fromPt.y); ctx.lineTo(toPt.x, toPt.y); ctx.stroke();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    const bossPt = getCenter(document.getElementById('bossNode'));
+    for (let c = 0; c < COLS; c++) {
+        if (grid[ROWS - 1][c] !== 'empty') {
+            const lastNodePt = getCenter(document.getElementById(`node-${ROWS-1}-${c}`));
+            if (lastNodePt && bossPt) {
+                ctx.beginPath(); ctx.moveTo(lastNodePt.x, lastNodePt.y); ctx.lineTo(bossPt.x, bossPt.y); ctx.stroke();
+            }
+        }
+    }
+}
+
+window.onload = function() { buildMap('high'); };
+</script>
+
+</body>
+</html>
